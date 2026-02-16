@@ -5,6 +5,9 @@ from astrbot.api.message_components import Plain, Image
 import yaml
 import os
 import re
+import hashlib
+import time
+import aiohttp
 
 @register("enhanced_plugin", "长安某", "关键词回复", "1.1.0", "https://github.com/your-repo-url")
 class EnhancedPlugin(Star):
@@ -12,7 +15,7 @@ class EnhancedPlugin(Star):
         super().__init__(context)
         
         # 构建存储问答对的 YAML 文件路径
-        self.yaml_path = os.path.join('data', 'plugins', 'keyword_reply', 'triggers.yml')
+        self.yaml_path = os.path.join('data', 'plugin_data', 'keyword_reply', 'triggers.yml')
         directory = os.path.dirname(self.yaml_path)
         # 若目录不存在则创建
         if not os.path.exists(directory):
@@ -38,7 +41,7 @@ class EnhancedPlugin(Star):
         self.current_sender_id = None
 
         # 加载允许的群组配置
-        self.allowed_groups_path = os.path.join('data', 'plugins', 'keyword_reply', 'allowed_groups.yml')
+        self.allowed_groups_path = os.path.join('data', 'plugin_data', 'keyword_reply', 'allowed_groups.yml')
         if not os.path.exists(self.allowed_groups_path):
             default_allowed = {"allowed_groups": []}
             with open(self.allowed_groups_path, 'w', encoding='utf-8') as f:
@@ -78,11 +81,31 @@ class EnhancedPlugin(Star):
         sender_id = event.get_sender_id()
         message_str = event.message_str
         message_chain = message_obj.message
-
+        
         # 检查是否来自允许的群组
         if str(group_id) not in self.allowed_groups:
             return
-
+        
+        async def download_image_to_local(url, save_dir="data/plugin_data/keyword_reply/images"):
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            # 用url+时间哈希生成文件名，防止特殊字符问题
+            m = hashlib.md5()
+            m.update((url + str(time.time())).encode("utf-8"))
+            filename = m.hexdigest() + ".jpg"  # 默认jpg, 可按实际返回类型调整
+            save_path = os.path.join(save_dir, filename)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        resp.raise_for_status()
+                        content = await resp.read()
+                        with open(save_path, 'wb') as f:
+                            f.write(content)
+            except Exception as e:
+                print(f"Download failed: {url}, reason: {e}")
+                return None
+            return save_path
+                
         if self.recording:
             # 忽略非当前记录群或用户的消息
             if self.current_group_id != group_id or self.current_sender_id != sender_id:
@@ -104,8 +127,13 @@ class EnhancedPlugin(Star):
                 # 记录答案文本和图片信息
                 for component in message_chain:
                     if isinstance(component, Image):
-                        answer_images.append(component.url if hasattr(component, 'url') else component.file)
-
+                        # await 是关键
+                        local_path = await download_image_to_local(component.url)
+                        if local_path:
+                            answer_images.append(local_path)
+                        else:
+                            answer_images.append(component.url if hasattr(component, 'url') else component.file)
+                            
                 question = {"text": self.temp_question, "images": self.temp_question_images}
                 answer = {"text": answer_text, "images": answer_images}
                 # 存储问答对
@@ -128,13 +156,13 @@ class EnhancedPlugin(Star):
             # 非记录状态下，使用正则匹配消息并回复
             for question_str, answer in self.triggers.items():
                 question = eval(question_str)
-                pattern = question["text"].replace("%", ".*")
+                pattern = "^" + question["text"].replace("%", ".*") + "$"
                 if re.search(pattern, message_str):
                     reply_chain = []
                     if answer["text"]:
                         reply_chain.append(Plain(text=answer["text"]))
-                    for image_url in answer["images"]:
-                        reply_chain.append(Image.fromURL(url=image_url))
+                    for image_path in answer["images"]:
+                        reply_chain.append(Image(file=image_path))
                     yield event.chain_result(reply_chain)
                     return
             if message_str == "开始记录":
