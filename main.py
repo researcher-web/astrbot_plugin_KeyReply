@@ -89,15 +89,21 @@ class EnhancedPlugin(Star):
         async def download_image_to_local(url, save_dir="data/plugin_data/keyword_reply/images"):
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
-            # 用url+时间哈希生成文件名，防止特殊字符问题
             m = hashlib.md5()
             m.update((url + str(time.time())).encode("utf-8"))
-            filename = m.hexdigest() + ".jpg"  # 默认jpg, 可按实际返回类型调整
-            save_path = os.path.join(save_dir, filename)
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url) as resp:
                         resp.raise_for_status()
+                        content_type = resp.headers.get('Content-Type', '')
+                        # 解析扩展名（默认 jpg）
+                        ext = '.jpg'
+                        if 'image/' in content_type:
+                            ext = '.' + content_type.split('/')[-1].split(';')[0]
+                            if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                                ext = '.jpg'  # 不支持的格式自动回退为jpg
+                        filename = m.hexdigest() + ext
+                        save_path = os.path.join(save_dir, filename)
                         content = await resp.read()
                         with open(save_path, 'wb') as f:
                             f.write(content)
